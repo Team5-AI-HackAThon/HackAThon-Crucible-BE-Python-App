@@ -256,6 +256,41 @@ class AzureVideoIndexerService:
             "raw_index_data": index_data,
         }
 
+    def submit_video_url(self, video_url: str, name: str, callback_url: str) -> str:
+        """Submit video URL to VI with a callbackUrl. Returns video_id immediately, no polling."""
+        print(f"[vi:submit] submitting name={name} callbackUrl={callback_url}", flush=True)
+        access_token = self._get_access_token()
+        url = f"{self.BASE_URL}/{self.location}/Accounts/{self.account_id}/Videos"
+        with httpx.Client(timeout=httpx.Timeout(connect=10, read=60, write=10, pool=5)) as client:
+            response = client.post(url, params={
+                "name": name,
+                "accessToken": access_token,
+                "videoUrl": video_url,
+                "language": "auto",
+                "callbackUrl": callback_url,
+            })
+        print(f"[vi:submit] response status={response.status_code}", flush=True)
+        if response.status_code not in (200, 201):
+            print(f"[vi:submit] ERROR body={response.text}", flush=True)
+            raise ValueError(f"VI submit failed: {response.status_code} {response.text}")
+        video_id = response.json().get("id")
+        if not video_id:
+            raise ValueError("VI did not return a video ID")
+        print(f"[vi:submit] success video_id={video_id}", flush=True)
+        return video_id
+
+    def fetch_index_data(self, video_id: str) -> dict:
+        """Fetch full index data for a completed video (called from callback)."""
+        print(f"[vi:fetch_index] video_id={video_id}", flush=True)
+        access_token = self._get_access_token()
+        url = f"{self.BASE_URL}/{self.location}/Accounts/{self.account_id}/Videos/{video_id}/Index"
+        with httpx.Client(timeout=httpx.Timeout(connect=10, read=60, write=5, pool=5)) as client:
+            resp = client.get(url, params={"accessToken": access_token})
+        print(f"[vi:fetch_index] response status={resp.status_code}", flush=True)
+        if resp.status_code != 200:
+            raise ValueError(f"Failed to fetch index: {resp.status_code} {resp.text}")
+        return resp.json()
+
     def analyze_video_url(self, video_url: str, name: str) -> dict:
         """Same pipeline as analyze_video_file but submits a URL instead of uploading a file."""
         print(f"[video] ── START analyze_video_url name={name} ──", flush=True)

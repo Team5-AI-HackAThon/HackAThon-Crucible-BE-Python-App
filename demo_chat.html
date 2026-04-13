@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LLM Chat + Sentiment Demo</title>
+  <title>Video Intelligence Demo</title>
   <style>
     :root { font-family: Arial, sans-serif; }
     body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
@@ -19,7 +19,6 @@
       border-radius: 8px;
       box-sizing: border-box;
     }
-    textarea { min-height: 120px; resize: vertical; }
     .field { flex: 1; min-width: 180px; }
     button {
       background: #111827;
@@ -37,82 +36,42 @@
       margin-top: 1rem;
       background: #fafafa;
     }
-    .section-title { margin: 1.25rem 0 0.5rem 0; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
     .error { color: #b00020; }
+    .progress-wrap { display: none; margin: 1rem 0; }
+    .progress-label { font-size: 0.85rem; color: #555; margin-bottom: 0.4rem; }
+    .progress-bar-bg {
+      width: 100%;
+      height: 10px;
+      background: #e5e7eb;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: #111827;
+      border-radius: 99px;
+      transition: width 0.6s ease;
+    }
   </style>
 </head>
 <body>
-  <h1>LLM Chat + Sentiment Demo</h1>
-  <p class="hint">Use this UI for chat, or run Azure sentiment analysis on text/document content.</p>
+  <h1>Video Intelligence Demo</h1>
+  <p class="hint">Analyze pitch videos using Azure Video Indexer and AI scoring.</p>
 
   <div class="row">
     <div class="field">
       <label for="baseUrl">Backend URL</label>
       <input id="baseUrl" value="http://127.0.0.1:8000" />
     </div>
-    <div class="field">
-      <label for="provider">Provider</label>
-      <select id="provider">
-        <option value="openai">openai</option>
-        <option value="anthropic">anthropic</option>
-      </select>
-    </div>
   </div>
 
-  <h3 class="section-title">Chat (OpenAI/Anthropic)</h3>
-  <label for="prompt">Ask something</label>
-  <textarea id="prompt" placeholder="Type your message here...">Explain AI in simple words.</textarea>
-
-  <div class="row">
-    <button id="sendBtn">Send Request</button>
-    <button id="checkProvidersBtn" type="button">Check Available Providers</button>
-  </div>
-
-  <h3 class="section-title">Sentiment Analysis (Azure Language)</h3>
-  <label for="sentimentText">Text to analyze (optional if uploading file)</label>
-  <textarea id="sentimentText" placeholder="Type text for sentiment analysis..."></textarea>
-
+  <h3>Video Analysis (Video Indexer ➜ Pitch Scores)</h3>
   <div class="row">
     <div class="field">
-      <label for="language">Language</label>
-      <input id="language" value="en" />
-    </div>
-    <div class="field">
-      <label for="docFile">Upload Document (.pdf, .docx, .txt)</label>
-      <input id="docFile" type="file" accept=".pdf,.docx,.txt,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
-    </div>
-  </div>
-
-  <div class="row">
-    <button id="analyzeSentimentBtn" type="button">Analyze Sentiment</button>
-  </div>
-
-  <h3 class="section-title">Audio Sentiment (Speech ➜ Sentiment)</h3>
-  <div class="row">
-    <div class="field">
-      <label for="audioFile">Upload Audio (.wav, .mp3, .mp4, .m4a, .ogg)</label>
-      <input id="audioFile" type="file" accept=".wav,.mp3,.mp4,.m4a,.ogg,audio/*,video/mp4" />
-    </div>
-    <div class="field">
-      <label for="speechLanguage">Speech Language</label>
-      <input id="speechLanguage" value="en-US" />
-    </div>
-  </div>
-
-  <div class="row">
-    <button id="analyzeAudioBtn" type="button">Analyze Audio</button>
-  </div>
-
-  <h3 class="section-title">Video Sentiment (Video Indexer ➜ Sentiment)</h3>
-  <div class="row">
-    <div class="field">
-      <label for="videoFile">Upload Video (.mp4, .mov, .avi, .wmv)</label>
-      <input id="videoFile" type="file" accept=".mp4,.mov,.avi,.wmv,video/*" />
-    </div>
-    <div class="field">
-      <label for="videoSentimentLanguage">Sentiment Language</label>
-      <input id="videoSentimentLanguage" value="en" />
+      <label for="videoFile">Upload Video (.mp4, .mov, .avi, .wmv, .webm)</label>
+      <input id="videoFile" type="file" accept=".mp4,.mov,.avi,.wmv,.webm,video/*" />
     </div>
   </div>
 
@@ -121,14 +80,16 @@
     <button id="processQueueBtn" type="button">Process Queue (Supabase)</button>
   </div>
 
-  <div class="card">
-    <h3>Response / Sentiment Result</h3>
-    <div id="response" class="mono">(waiting for request)</div>
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-label" id="progressLabel">Processing... 0%</div>
+    <div class="progress-bar-bg">
+      <div class="progress-bar-fill" id="progressFill"></div>
+    </div>
   </div>
 
   <div class="card">
-    <h3>Performance</h3>
-    <div id="performance" class="mono">(no data yet)</div>
+    <h3>Result</h3>
+    <div id="response" class="mono">(waiting for request)</div>
   </div>
 
   <div class="card">
@@ -138,22 +99,46 @@
 
   <script>
     const baseUrlEl = document.getElementById('baseUrl');
-    const providerEl = document.getElementById('provider');
-    const promptEl = document.getElementById('prompt');
-    const sendBtn = document.getElementById('sendBtn');
-    const checkProvidersBtn = document.getElementById('checkProvidersBtn');
-    const sentimentTextEl = document.getElementById('sentimentText');
-    const languageEl = document.getElementById('language');
-    const docFileEl = document.getElementById('docFile');
-    const analyzeSentimentBtn = document.getElementById('analyzeSentimentBtn');
-    const audioFileEl = document.getElementById('audioFile');
-    const speechLanguageEl = document.getElementById('speechLanguage');
-    const analyzeAudioBtn = document.getElementById('analyzeAudioBtn');
     const videoFileEl = document.getElementById('videoFile');
-    const videoSentimentLanguageEl = document.getElementById('videoSentimentLanguage');
     const analyzeVideoBtn = document.getElementById('analyzeVideoBtn');
+    const progressWrap = document.getElementById('progressWrap');
+    const progressFill = document.getElementById('progressFill');
+    const progressLabel = document.getElementById('progressLabel');
+
+    let progressTimer = null;
+
+    function startProgress(labelPrefix = 'Processing') {
+      progressWrap.style.display = 'block';
+      let pct = 0;
+      setProgress(0, `${labelPrefix}... 0%`);
+      // Ramp to 90% over ~110s (VI typically takes 60-120s)
+      progressTimer = setInterval(() => {
+        if (pct < 90) {
+          pct += pct < 50 ? 2 : pct < 75 ? 1 : 0.4;
+          pct = Math.min(pct, 90);
+          setProgress(pct, `${labelPrefix}... ${Math.round(pct)}%`);
+        }
+      }, 1200);
+    }
+
+    function finishProgress(label = 'Complete') {
+      clearInterval(progressTimer);
+      setProgress(100, label);
+      setTimeout(() => { progressWrap.style.display = 'none'; }, 2000);
+    }
+
+    function resetProgress() {
+      clearInterval(progressTimer);
+      progressWrap.style.display = 'none';
+      setProgress(0, '');
+    }
+
+    function setProgress(pct, label) {
+      progressFill.style.width = `${pct}%`;
+      progressLabel.textContent = label;
+    }
+    const processQueueBtn = document.getElementById('processQueueBtn');
     const responseEl = document.getElementById('response');
-    const performanceEl = document.getElementById('performance');
     const statusEl = document.getElementById('status');
 
     function setStatus(message, isError = false) {
@@ -161,194 +146,8 @@
       statusEl.className = isError ? 'mono error' : 'mono';
     }
 
-    async function sendChat() {
-      const baseUrl = baseUrlEl.value.trim().replace(/\/$/, '');
-      const provider = providerEl.value;
-      const message = promptEl.value.trim();
-
-      if (!message) {
-        setStatus('Please enter a prompt first.', true);
-        return;
-      }
-
-      sendBtn.disabled = true;
-      setStatus('Sending request...');
-      responseEl.textContent = '(loading...)';
-      performanceEl.textContent = '(loading...)';
-
-      try {
-        const url = `${baseUrl}/api/v1/chat/simple?message=${encodeURIComponent(message)}&provider=${encodeURIComponent(provider)}`;
-        const res = await fetch(url, { method: 'POST' });
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data.detail || JSON.stringify(data));
-        }
-
-        responseEl.textContent = data.response || '(empty response)';
-        performanceEl.textContent = JSON.stringify(data.performance, null, 2);
-        setStatus('Success');
-      } catch (err) {
-        responseEl.textContent = '(request failed)';
-        performanceEl.textContent = '(no performance data)';
-        setStatus(`Error: ${err.message}`, true);
-      } finally {
-        sendBtn.disabled = false;
-      }
-    }
-
-    async function getTextFromInputOrFile() {
-      const directText = sentimentTextEl.value.trim();
-      if (directText) return directText;
-
-      const file = docFileEl.files && docFileEl.files[0];
-      if (!file) return '';
-
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || '').trim());
-        reader.onerror = () => reject(new Error('Failed to read uploaded file.'));
-        reader.readAsText(file);
-      });
-    }
-
-    async function analyzeSentimentFromDocument(file, language, baseUrl) {
-      const form = new FormData();
-      form.append('file', file);
-      form.append('language', language);
-
-      const res = await fetch(`${baseUrl}/api/v1/sentiment/document`, {
-        method: 'POST',
-        body: form
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || JSON.stringify(data));
-      }
-      return data;
-    }
-
-    async function analyzeAudio() {
-      const baseUrl = baseUrlEl.value.trim().replace(/\/$/, '');
-      const sentimentLanguage = (languageEl.value || 'en').trim();
-      const speechLanguage = (speechLanguageEl.value || 'en-US').trim();
-      const file = audioFileEl.files && audioFileEl.files[0];
-
-      if (!file) {
-        setStatus('Please upload an audio file first.', true);
-        return;
-      }
-
-      analyzeAudioBtn.disabled = true;
-      setStatus('Uploading audio and analyzing...');
-      responseEl.textContent = '(loading...)';
-      performanceEl.textContent = '(not applicable for sentiment endpoint)';
-
-      try {
-        const form = new FormData();
-        form.append('file', file);
-        form.append('speech_language', speechLanguage);
-        form.append('sentiment_language', sentimentLanguage);
-
-        const res = await fetch(`${baseUrl}/api/v1/sentiment/audio`, {
-          method: 'POST',
-          body: form,
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || JSON.stringify(data));
-        }
-
-        responseEl.textContent = JSON.stringify(data, null, 2);
-        setStatus('Audio sentiment analysis success');
-      } catch (err) {
-        responseEl.textContent = '(audio sentiment request failed)';
-        setStatus(`Error: ${err.message}`, true);
-      } finally {
-        analyzeAudioBtn.disabled = false;
-      }
-    }
-
-    async function analyzeSentiment() {
-      const baseUrl = baseUrlEl.value.trim().replace(/\/$/, '');
-      const language = (languageEl.value || 'en').trim();
-
-      analyzeSentimentBtn.disabled = true;
-      setStatus('Preparing sentiment input...');
-      responseEl.textContent = '(loading...)';
-      performanceEl.textContent = '(not applicable for sentiment endpoint)';
-
-      try {
-        const text = sentimentTextEl.value.trim();
-        const file = docFileEl.files && docFileEl.files[0];
-
-        if (!text && !file) {
-          throw new Error('Provide text or upload a text document first.');
-        }
-
-        let data;
-        if (text) {
-          const res = await fetch(`${baseUrl}/api/v1/sentiment/text`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, language })
-          });
-
-          data = await res.json();
-          if (!res.ok) {
-            throw new Error(data.detail || JSON.stringify(data));
-          }
-        } else {
-          data = await analyzeSentimentFromDocument(file, language, baseUrl);
-        }
-
-        responseEl.textContent = JSON.stringify(data, null, 2);
-        setStatus('Sentiment analysis success');
-      } catch (err) {
-        responseEl.textContent = '(sentiment request failed)';
-        setStatus(`Error: ${err.message}`, true);
-      } finally {
-        analyzeSentimentBtn.disabled = false;
-      }
-    }
-
-    async function checkProviders() {
-      const baseUrl = baseUrlEl.value.trim().replace(/\/$/, '');
-      setStatus('Checking providers...');
-      try {
-        const res = await fetch(`${baseUrl}/api/v1/providers`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
-
-        const available = data.available_providers || [];
-        const current = providerEl.value;
-        providerEl.innerHTML = '';
-
-        if (available.length === 0) {
-          providerEl.innerHTML = '<option value="">(none available)</option>';
-          setStatus('No providers available. Check your API keys in .env', true);
-          return;
-        }
-
-        for (const p of available) {
-          const opt = document.createElement('option');
-          opt.value = p;
-          opt.textContent = p;
-          providerEl.appendChild(opt);
-        }
-
-        if (available.includes(current)) providerEl.value = current;
-        setStatus(`Available providers: ${available.join(', ')}`);
-      } catch (err) {
-        setStatus(`Error checking providers: ${err.message}`, true);
-      }
-    }
-
     async function analyzeVideo() {
       const baseUrl = baseUrlEl.value.trim().replace(/\/$/, '');
-      const sentimentLanguage = (videoSentimentLanguageEl.value || 'en').trim();
       const file = videoFileEl.files && videoFileEl.files[0];
 
       if (!file) {
@@ -357,87 +156,74 @@
       }
 
       analyzeVideoBtn.disabled = true;
-      setStatus('Uploading video and analyzing... this may take a few minutes.');
-      responseEl.textContent = '(loading...)';
-      performanceEl.textContent = '(not applicable for sentiment endpoint)';
+      setStatus('Uploading video...');
+      responseEl.textContent = '(processing...)';
+      setProgress(0, 'Starting...');
+      progressWrap.style.display = 'block';
 
       try {
         const form = new FormData();
         form.append('file', file);
-        form.append('sentiment_language', sentimentLanguage);
 
-        const res = await fetch(`${baseUrl}/api/v1/sentiment/video`, {
+        const res = await fetch(`${baseUrl}/api/v1/sentiment/video/stream`, {
           method: 'POST',
           body: form,
         });
 
-        const data = await res.json();
         if (!res.ok) {
-          throw new Error(data.detail || JSON.stringify(data));
+          const err = await res.json();
+          throw new Error(err.detail || JSON.stringify(err));
         }
 
-        // GPT sentiment
-        const gptSection = data.gpt_sentiment
-          ? [
-              `--- GPT SENTIMENT ANALYSIS ---`,
-              `Sentiment: ${data.gpt_sentiment.sentiment.toUpperCase()}  |  Confidence: ${(data.gpt_sentiment.confidence * 100).toFixed(1)}%`,
-              `Reason: ${data.gpt_sentiment.reason}`,
-              `Key Phrases: ${(data.gpt_sentiment.key_phrases || []).join(', ')}`,
-            ]
-          : [`--- GPT SENTIMENT ANALYSIS ---`, `  (not available)`];
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResult = null;
 
-        // Video sentiments with average score
-        const videoSentimentLines = (data.video_sentiments || []).length > 0
-          ? (data.video_sentiments || [])
-              .sort((a, b) => b.average_score - a.average_score)
-              .map(s => {
-                const ranges = (s.appearances || []).map(a => `${a.start_time} → ${a.end_time}`).join(', ');
-                return `  ${s.sentiment_type}: score=${s.average_score.toFixed(2)}  (${ranges})`;
-              })
-          : ['  (no video sentiments detected)'];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-        // Emotions with confidence
-        const emotionLines = (data.emotions || []).length > 0
-          ? (data.emotions || [])
-              .sort((a, b) => b.confidence - a.confidence)
-              .map(e => {
-                const ranges = (e.appearances || []).map(a => `${a.start_time} → ${a.end_time}`).join(', ');
-                return `  ${e.emotion_type}: ${(e.confidence * 100).toFixed(1)}% confidence  (${ranges})`;
-              })
-          : ['  (no facial emotions detected)'];
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // keep incomplete line
 
-        // Insights
-        const ins = data.insights || {};
-        const insightsLines = [
-          `Topics: ${(ins.topics || []).join(', ') || '(none)'}`,
-          `Keywords: ${(ins.keywords || []).join(', ') || '(none)'}`,
-          `Duration: ${ins.duration_seconds || 0}s`,
-        ];
-        const speakerLines = (ins.speakers || []).length > 0
-          ? (ins.speakers || []).map(sp =>
-              `  ${sp.name}: ${sp.word_count} words, ${(sp.talk_ratio * 100).toFixed(1)}% talk time`
-            )
-          : ['  (no speaker data)'];
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            let event;
+            try { event = JSON.parse(line.slice(6)); } catch { continue; }
 
-        // Pitch scores (C section) — shown first and prominently
-        const ps = data.pitch_scores;
+            setProgress(event.progress, event.message);
+            setStatus(event.message);
+
+            if (event.stage === 'error') {
+              resetProgress();
+              setStatus(`Error: ${event.message}`, true);
+              responseEl.textContent = '(analysis failed)';
+              return;
+            }
+
+            if (event.stage === 'done') {
+              finalResult = event.result;
+            }
+          }
+        }
+
+        if (!finalResult) throw new Error('No result received from stream');
+
+        const ps = finalResult.pitch_scores;
         const dims = ['team_strength', 'technical_strength', 'innovation', 'credibility', 'confidence'];
         const dimLabels = {
-          team_strength: 'Team Strength     ',
+          team_strength:      'Team Strength     ',
           technical_strength: 'Technical Strength',
-          innovation: 'Innovation        ',
-          credibility: 'Credibility       ',
-          confidence: 'Confidence        ',
+          innovation:         'Innovation        ',
+          credibility:        'Credibility       ',
+          confidence:         'Confidence        ',
         };
 
-        const rawJson = JSON.stringify(data.raw_index_data || {}, null, 2);
-
         const summary = [
-          `=== RAW VIDEO INDEXER OUTPUT ===`,
-          rawJson,
-          ``,
           `=== PITCH SCORES ===`,
-          `Video: ${data.video_id}  |  Response Time: ${data.response_time_seconds}s`,
+          `Video: ${finalResult.video_id}  |  Response Time: ${finalResult.response_time_seconds}s`,
           ...(ps ? [
             ``,
             ...dims.map(d => {
@@ -456,23 +242,23 @@
         ].join('\n');
 
         responseEl.textContent = summary;
-        performanceEl.textContent = `Total response time: ${data.response_time_seconds}s`;
-        setStatus('Video sentiment analysis success');
+        finishProgress('Analysis complete ✓');
+        setStatus('Video analysis complete');
       } catch (err) {
-        responseEl.textContent = '(video sentiment request failed)';
+        resetProgress();
+        responseEl.textContent = '(video analysis failed)';
         setStatus(`Error: ${err.message}`, true);
       } finally {
         analyzeVideoBtn.disabled = false;
       }
     }
 
-    const processQueueBtn = document.getElementById('processQueueBtn');
-
     async function processQueue() {
       const baseUrl = baseUrlEl.value.trim().replace(/\/$/, '');
       processQueueBtn.disabled = true;
       setStatus('Processing queue... this may take several minutes.');
       responseEl.textContent = '(loading...)';
+      startProgress('Processing queue');
 
       try {
         const res = await fetch(`${baseUrl}/api/v1/sentiment/process-queue`, { method: 'POST' });
@@ -480,6 +266,7 @@
         if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
 
         if (data.processed === 0) {
+          resetProgress();
           responseEl.textContent = 'No unprocessed videos found in queue.';
           setStatus('Queue empty');
           return;
@@ -502,8 +289,10 @@
         }
 
         responseEl.textContent = lines.join('\n');
+        finishProgress('Queue complete ✓');
         setStatus('Queue processing complete');
       } catch (err) {
+        resetProgress();
         responseEl.textContent = '(queue processing failed)';
         setStatus(`Error: ${err.message}`, true);
       } finally {
@@ -511,15 +300,8 @@
       }
     }
 
-    sendBtn.addEventListener('click', sendChat);
-    checkProvidersBtn.addEventListener('click', checkProviders);
-    analyzeSentimentBtn.addEventListener('click', analyzeSentiment);
-    analyzeAudioBtn.addEventListener('click', analyzeAudio);
     analyzeVideoBtn.addEventListener('click', analyzeVideo);
     processQueueBtn.addEventListener('click', processQueue);
-
-    // Initial provider check on load
-    checkProviders();
   </script>
 </body>
 </html>
