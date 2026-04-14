@@ -1,4 +1,7 @@
-from fastapi import APIRouter, HTTPException, status, UploadFile, File, Request
+import uuid as uuid_stdlib
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Request, Form, BackgroundTasks
 from fastapi.responses import StreamingResponse
 import os
 import tempfile
@@ -6,7 +9,7 @@ import asyncio
 import json as _json
 import time
 
-from app.models import VideoSentimentResponse
+from app.models import AsyncVideoSubmitResponse, VideoSentimentResponse
 from app.services.azure_video_indexer_service import AzureVideoIndexerService
 from app.services.llm_service import LLMService
 from app.services.scorer import run_b_layer
@@ -19,9 +22,88 @@ llm_service = LLMService()
 SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".wmv", ".webm"}
 
 
+def background_index_sentiment_output(sentiment_output_id: str) -> None:
+    """Runs after HTTP 202: Video Indexer URL job + persist scores (same logic as process-queue row)."""
+    from app.services.supabase_service import (
+        fetch_sentiment_output_for_job,
+        set_job_meta,
+        store_raw_output,
+        update_processed,
+    )
+
+    try:
+        set_job_meta(sentiment_output_id, "running", None)
+    except Exception as e:
+        print(f"[async-job] could not mark running id={sentiment_output_id}: {e}", flush=True)
+        return
+
+    try:
+        row = fetch_sentiment_output_for_job(sentiment_output_id)
+        media_url = row.get("media_url")
+        if not media_url:
+            set_job_meta(sentiment_output_id, "failed", "No media_url on sentiment_outputs row")
+            return
+
+        if not azure_video_indexer_service.is_configured():
+            set_job_meta(
+                sentiment_output_id,
+                "failed",
+                "Azure Video Indexer is not configured on the server.",
+            )
+            return
+
+        asset_id = row.get("media_asset_id") or sentiment_output_id
+        print(f"[async-job] Video Indexer start id={sentiment_output_id}", flush=True)
+        indexer_result = azure_video_indexer_service.analyze_video_url(
+            video_url=media_url,
+            name=f"asset_{asset_id}",
+        )
+        store_raw_output(sentiment_output_id, indexer_result["raw_index_data"])
+        pitch = run_b_layer(indexer_result["raw_index_data"])
+        scores = {
+            "team_strength": pitch["team_strength"]["score"],
+            "technical_strength": pitch["technical_strength"]["score"],
+            "innovation": pitch["innovation"]["score"],
+            "credibility": pitch["credibility"]["score"],
+            "confidence": pitch["confidence"]["score"],
+        }
+        gpt_sentiment = {}
+        try:
+            gpt_sentiment = llm_service.analyze_sentiment_with_gpt(
+                indexer_result["transcript"], video_data=indexer_result
+            )
+        except Exception as e:
+            print(f"[async-job] GPT sentiment failed (non-fatal): {e}", flush=True)
+        update_processed(sentiment_output_id, scores, gpt_sentiment)
+        print(f"[async-job] complete id={sentiment_output_id}", flush=True)
+    except Exception as e:
+        print(f"[async-job] ERROR id={sentiment_output_id}: {e}", flush=True)
+        try:
+            set_job_meta(sentiment_output_id, "failed", str(e))
+        except Exception:
+            pass
+
+
+def _gpt_as_dict(gpt_sentiment) -> dict:
+    if gpt_sentiment is None:
+        return {}
+    if isinstance(gpt_sentiment, dict):
+        return gpt_sentiment
+    if hasattr(gpt_sentiment, "model_dump"):
+        return gpt_sentiment.model_dump()
+    return dict(gpt_sentiment)
+
+
 @router.post("/video", response_model=VideoSentimentResponse)
 async def analyze_video_sentiment(
     file: UploadFile = File(...),
+    supabase_row_id: Optional[str] = Form(
+        default=None,
+        description=(
+            "Optional sentiment_outputs.id: after analysis, raw VI JSON and scores "
+            "are written to this row (same as process-queue)."
+        ),
+    ),
 ):
     """Upload a video file, extract transcript via Azure Video Indexer, then analyze sentiment."""
     temp_path = None
@@ -87,6 +169,27 @@ async def analyze_video_sentiment(
         except Exception as e:
             print(f"[video] pitch scoring failed (non-fatal): {str(e)}", flush=True)
 
+        persisted = False
+        persistence_error = None
+        row_for_response: Optional[str] = None
+        rid = (supabase_row_id or "").strip() or None
+        if rid:
+            from app.services.supabase_service import persist_upload_analysis
+
+            if not pitch_scores:
+                persistence_error = "Cannot persist without pitch scores (scoring failed)."
+            else:
+                ok, persistence_error = persist_upload_analysis(
+                    rid,
+                    indexer_result["raw_index_data"],
+                    pitch_scores,
+                    _gpt_as_dict(gpt_sentiment),
+                )
+                persisted = ok
+                if ok:
+                    row_for_response = rid
+                    print(f"[video] persisted to Supabase row id={rid}", flush=True)
+
         return VideoSentimentResponse(
             transcript=transcript,
             overall_sentiment="neutral",
@@ -100,6 +203,9 @@ async def analyze_video_sentiment(
             raw_index_data=indexer_result["raw_index_data"],
             video_id=indexer_result["video_id"],
             response_time_seconds=indexer_result["response_time_seconds"],
+            persisted_to_supabase=persisted,
+            supabase_row_id=row_for_response,
+            persistence_error=persistence_error if rid and not persisted else None,
         )
 
     except HTTPException:
@@ -120,7 +226,16 @@ async def analyze_video_sentiment(
 
 
 @router.post("/video/stream")
-async def analyze_video_stream(file: UploadFile = File(...)):
+async def analyze_video_stream(
+    file: UploadFile = File(...),
+    supabase_row_id: Optional[str] = Form(
+        default=None,
+        description=(
+            "Optional sentiment_outputs.id: on success, raw VI JSON and scores are "
+            "saved to this row; final SSE event includes persisted_to_supabase."
+        ),
+    ),
+):
     """SSE endpoint — streams real Azure Video Indexer progress to the frontend."""
 
     filename = file.filename or "video"
@@ -145,6 +260,8 @@ async def analyze_video_stream(file: UploadFile = File(...)):
     with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as f:
         f.write(file_bytes)
         temp_path = f.name
+
+    row_to_persist = (supabase_row_id or "").strip() or None
 
     async def event_stream():
         loop = asyncio.get_running_loop()
@@ -230,6 +347,23 @@ async def analyze_video_stream(file: UploadFile = File(...)):
 
             total = round(time.monotonic() - start, 1)
 
+            persisted = False
+            persistence_error = None
+            supabase_row_out: Optional[str] = None
+            if row_to_persist:
+                from app.services.supabase_service import persist_upload_analysis
+
+                ok, persistence_error = persist_upload_analysis(
+                    row_to_persist,
+                    index_data,
+                    pitch,
+                    _gpt_as_dict(gpt_sentiment),
+                )
+                persisted = ok
+                if ok:
+                    supabase_row_out = row_to_persist
+                    print(f"[stream] persisted to Supabase row id={row_to_persist}", flush=True)
+
             # Final result
             yield sse({
                 "stage": "done",
@@ -245,6 +379,9 @@ async def analyze_video_stream(file: UploadFile = File(...)):
                     "scores": scores,
                     "gpt_sentiment": gpt_sentiment,
                     "response_time_seconds": total,
+                    "persisted_to_supabase": persisted,
+                    "supabase_row_id": supabase_row_out,
+                    "persistence_error": persistence_error if row_to_persist and not persisted else None,
                 },
             })
 
@@ -259,6 +396,94 @@ async def analyze_video_stream(file: UploadFile = File(...)):
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post(
+    "/video/submit-async",
+    response_model=AsyncVideoSubmitResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def submit_video_async(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    owner_id: str = Form(
+        ...,
+        description="profiles.id (auth.users id) — owner of the new media_assets row",
+    ),
+    project_id: Optional[str] = Form(
+        default=None,
+        description="Optional projects.id for media_assets.project_id",
+    ),
+    media_kind: str = Form(
+        default="video",
+        description="media_assets.kind — must match your Postgres enum / check constraint",
+    ),
+):
+    """
+    Store the file in Supabase Storage, insert media_assets + sentiment_outputs, return
+    IDs and media_url immediately (HTTP 202). Video Indexer + scoring run in a background task.
+    Poll GET /api/v1/sentiment/status/{sentiment_output_id} until job_status is done or failed.
+    """
+    if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Supabase is not configured (SUPABASE_URL, SUPABASE_KEY).",
+        )
+    try:
+        uuid_stdlib.UUID(owner_id.strip())
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="owner_id must be a valid UUID")
+    pid = (project_id or "").strip() or None
+    if pid:
+        try:
+            uuid_stdlib.UUID(pid)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="project_id must be a valid UUID")
+
+    filename = file.filename or "uploaded_video.mp4"
+    extension = os.path.splitext(filename.lower())[1]
+    if extension not in SUPPORTED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported extension: {extension}. "
+                f"Supported: {', '.join(sorted(SUPPORTED_VIDEO_EXTENSIONS))}"
+            ),
+        )
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
+
+    from app.services.supabase_service import upload_video_create_job
+
+    try:
+        created = upload_video_create_job(
+            owner_id=owner_id.strip(),
+            project_id=pid,
+            media_kind=(media_kind or "video").strip() or "video",
+            file_bytes=file_bytes,
+            filename=filename,
+            mime_type=file.content_type,
+        )
+    except Exception as e:
+        print(f"[submit-async] persist failed: {e}", flush=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not store media in Supabase: {str(e)}",
+        ) from e
+
+    sid = created["sentiment_output_id"]
+    background_tasks.add_task(background_index_sentiment_output, sid)
+    return AsyncVideoSubmitResponse(
+        sentiment_output_id=sid,
+        media_asset_id=created["media_asset_id"],
+        media_url=created["media_url"],
+        storage_bucket=created["storage_bucket"],
+        storage_path=created["storage_path"],
+        job_status="queued",
+        status_poll_path=f"/api/v1/sentiment/status/{sid}",
     )
 
 

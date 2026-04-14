@@ -33,23 +33,27 @@ def format_pitch_summary(final_result: dict[str, Any]) -> str:
     lines = ["=== PITCH SCORES ===", f"Video: {vid}  |  Response Time: {rt}s"]
     if not ps:
         lines.append("  (not available)")
-        return "\n".join(lines)
-    lines.append("")
-    for d in DIMS:
-        dim = ps.get(d) or {}
-        score = dim.get("score")
-        ev = dim.get("evidence_strength", "")
-        if score is not None:
-            lines.append(f"{DIM_LABELS[d]:20}  {float(score):.1f} / 10  [{ev}]")
-        else:
-            lines.append(f"{DIM_LABELS[d]:20}  (n/a)")
-    lines.append("")
-    for d in DIMS:
-        dim = ps.get(d) or {}
-        reasoning = dim.get("reasoning") or []
-        lines.append(f"  {DIM_LABELS[d]} reasoning:")
-        for r in reasoning:
-            lines.append(f"    - {r}")
+    else:
+        lines.append("")
+        for d in DIMS:
+            dim = ps.get(d) or {}
+            score = dim.get("score")
+            ev = dim.get("evidence_strength", "")
+            if score is not None:
+                lines.append(f"{DIM_LABELS[d]:20}  {float(score):.1f} / 10  [{ev}]")
+            else:
+                lines.append(f"{DIM_LABELS[d]:20}  (n/a)")
+        lines.append("")
+        for d in DIMS:
+            dim = ps.get(d) or {}
+            reasoning = dim.get("reasoning") or []
+            lines.append(f"  {DIM_LABELS[d]} reasoning:")
+            for r in reasoning:
+                lines.append(f"    - {r}")
+    if final_result.get("persisted_to_supabase"):
+        lines.extend(["", f"Supabase: saved to row id={final_result.get('supabase_row_id')}"])
+    elif final_result.get("persistence_error"):
+        lines.extend(["", f"Supabase save failed: {final_result['persistence_error']}"])
     return "\n".join(lines)
 
 
@@ -80,16 +84,20 @@ def stream_video_analysis(
     filename: str,
     content_type: Optional[str],
     on_event: Callable[[dict[str, Any]], None],
+    supabase_row_id: Optional[str] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """POST /video/stream, parse SSE. on_event receives each parsed SSE payload."""
     url = f"{_base(base_url)}/api/v1/sentiment/video/stream"
     mime = content_type or "application/octet-stream"
     files = {"file": (filename, file_bytes, mime)}
+    form: dict[str, str] = {}
+    if supabase_row_id and supabase_row_id.strip():
+        form["supabase_row_id"] = supabase_row_id.strip()
     final_result: Optional[dict[str, Any]] = None
     timeout = httpx.Timeout(600.0, connect=30.0, read=600.0, write=600.0)
 
     with httpx.Client(timeout=timeout) as client:
-        with client.stream("POST", url, files=files) as r:
+        with client.stream("POST", url, files=files, data=form or None) as r:
             if r.status_code != 200:
                 body = r.read().decode("utf-8", errors="replace")
                 try:
@@ -166,6 +174,11 @@ def main() -> None:
         "Upload video (.mp4, .mov, .avi, .wmv, .webm)",
         type=["mp4", "mov", "avi", "wmv", "webm"],
     )
+    supabase_row_id = st.text_input(
+        "Optional Supabase row id (sentiment_outputs.id — saves VI output + scores after analysis)",
+        value="",
+        placeholder="Leave empty to skip database save",
+    )
 
     st.session_state.setdefault("last_result_text", "(waiting for request)")
     st.session_state.setdefault("last_status", "Ready.")
@@ -192,7 +205,9 @@ def main() -> None:
             status_line.info(msg or "…")
 
         status_line.info("Uploading / processing…")
-        final_result, err = stream_video_analysis(base_url, data, fname, ctype, on_event)
+        final_result, err = stream_video_analysis(
+            base_url, data, fname, ctype, on_event, supabase_row_id=supabase_row_id or None
+        )
 
         if err:
             progress.progress(0, text="Error")

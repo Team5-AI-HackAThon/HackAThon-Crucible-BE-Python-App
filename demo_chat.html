@@ -65,6 +65,10 @@
       <label for="baseUrl">Backend URL</label>
       <input id="baseUrl" value="http://127.0.0.1:8000" />
     </div>
+    <div class="field">
+      <label for="supabaseRowId">Optional Supabase row id (sentiment_outputs.id)</label>
+      <input id="supabaseRowId" type="text" placeholder="Leave empty to skip DB save" />
+    </div>
   </div>
 
   <h3>Video Analysis (Video Indexer ➜ Pitch Scores)</h3>
@@ -164,6 +168,8 @@
       try {
         const form = new FormData();
         form.append('file', file);
+        const rowId = (document.getElementById('supabaseRowId').value || '').trim();
+        if (rowId) form.append('supabase_row_id', rowId);
 
         const res = await fetch(`${baseUrl}/api/v1/sentiment/video/stream`, {
           method: 'POST',
@@ -221,6 +227,9 @@
           confidence:         'Confidence        ',
         };
 
+        const persistNote = finalResult.persisted_to_supabase
+          ? `\n\nSupabase: saved to row id=${finalResult.supabase_row_id}`
+          : (finalResult.persistence_error ? `\n\nSupabase save failed: ${finalResult.persistence_error}` : '');
         const summary = [
           `=== PITCH SCORES ===`,
           `Video: ${finalResult.video_id}  |  Response Time: ${finalResult.response_time_seconds}s`,
@@ -239,6 +248,7 @@
               ];
             }),
           ] : [`  (not available)`]),
+          persistNote,
         ].join('\n');
 
         responseEl.textContent = summary;
