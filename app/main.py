@@ -31,9 +31,20 @@ app.add_middleware(
 
 app.include_router(sentiment.router)
 
-@app.get("/")
-async def health_check():
+
+def _health_payload() -> dict:
     return {"status": "healthy", "version": "1.0.0"}
+
+
+@app.get("/")
+async def root():
+    return _health_payload()
+
+
+@app.get("/health")
+async def health():
+    """Liveness check for UIs, load balancers, and monitors."""
+    return _health_payload()
 
 @app.on_event("startup")
 async def startup_event():
