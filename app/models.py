@@ -63,6 +63,18 @@ class SentenceSentiment(BaseModel):
     confidence_scores: dict
 
 
+class AsyncVideoSubmitResponse(BaseModel):
+    """Immediate response after upload to Storage + DB; Video Indexer runs in background."""
+
+    sentiment_output_id: str
+    media_asset_id: str
+    media_url: str
+    storage_bucket: str
+    storage_path: str
+    job_status: Literal["queued"] = "queued"
+    status_poll_path: str
+
+
 class VideoSentimentResponse(BaseModel):
     transcript: str
     overall_sentiment: Literal["positive", "neutral", "negative", "mixed"]
@@ -76,3 +88,6 @@ class VideoSentimentResponse(BaseModel):
     raw_index_data: Optional[dict] = None
     video_id: str
     response_time_seconds: float
+    persisted_to_supabase: bool = False
+    supabase_row_id: Optional[str] = None
+    persistence_error: Optional[str] = None
