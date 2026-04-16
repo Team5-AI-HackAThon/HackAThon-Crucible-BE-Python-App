@@ -28,6 +28,7 @@ def background_index_sentiment_output(sentiment_output_id: str) -> None:
         fetch_sentiment_output_for_job,
         set_job_meta,
         store_raw_output,
+        update_azure_video_indexer_id,
         update_processed,
     )
 
@@ -58,6 +59,9 @@ def background_index_sentiment_output(sentiment_output_id: str) -> None:
             video_url=media_url,
             name=f"asset_{asset_id}",
         )
+        vi_id = indexer_result.get("video_id")
+        if vi_id:
+            update_azure_video_indexer_id(sentiment_output_id, str(vi_id))
         store_raw_output(sentiment_output_id, indexer_result["raw_index_data"])
         pitch = run_b_layer(indexer_result["raw_index_data"])
         scores = {
@@ -74,7 +78,9 @@ def background_index_sentiment_output(sentiment_output_id: str) -> None:
             )
         except Exception as e:
             print(f"[async-job] GPT sentiment failed (non-fatal): {e}", flush=True)
-        update_processed(sentiment_output_id, scores, gpt_sentiment)
+        transcript = (indexer_result.get("transcript") or "").strip()
+        summary = transcript[:16000] if transcript else None
+        update_processed(sentiment_output_id, scores, gpt_sentiment, video_transcript_summary=summary)
         print(f"[async-job] complete id={sentiment_output_id}", flush=True)
     except Exception as e:
         print(f"[async-job] ERROR id={sentiment_output_id}: {e}", flush=True)
@@ -172,6 +178,7 @@ async def analyze_video_sentiment(
         persisted = False
         persistence_error = None
         row_for_response: Optional[str] = None
+        transcript_summary = (transcript or "").strip()[:16000] if transcript else None
         rid = (supabase_row_id or "").strip() or None
         if rid:
             from app.services.supabase_service import persist_upload_analysis
@@ -184,6 +191,7 @@ async def analyze_video_sentiment(
                     indexer_result["raw_index_data"],
                     pitch_scores,
                     _gpt_as_dict(gpt_sentiment),
+                    video_transcript_summary=transcript_summary,
                 )
                 persisted = ok
                 if ok:
@@ -206,6 +214,7 @@ async def analyze_video_sentiment(
             persisted_to_supabase=persisted,
             supabase_row_id=row_for_response,
             persistence_error=persistence_error if rid and not persisted else None,
+            video_transcript_summary=transcript_summary,
         )
 
     except HTTPException:
@@ -353,11 +362,13 @@ async def analyze_video_stream(
             if row_to_persist:
                 from app.services.supabase_service import persist_upload_analysis
 
+                tsum = (transcript or "").strip()[:16000] if transcript else None
                 ok, persistence_error = persist_upload_analysis(
                     row_to_persist,
                     index_data,
                     pitch,
                     _gpt_as_dict(gpt_sentiment),
+                    video_transcript_summary=tsum,
                 )
                 persisted = ok
                 if ok:
@@ -490,7 +501,12 @@ async def submit_video_async(
 @router.post("/process-queue")
 async def process_queue():
     """Fetch unprocessed rows from Supabase, run Video Indexer + scorer, write results back."""
-    from app.services.supabase_service import fetch_unprocessed, store_raw_output, update_processed
+    from app.services.supabase_service import (
+        fetch_unprocessed,
+        store_raw_output,
+        update_azure_video_indexer_id,
+        update_processed,
+    )
 
     print("[queue] checking for unprocessed videos", flush=True)
     rows = fetch_unprocessed()
@@ -512,6 +528,9 @@ async def process_queue():
                 video_url=media_url,
                 name=f"asset_{asset_id}",
             )
+            vi_id = indexer_result.get("video_id")
+            if vi_id:
+                update_azure_video_indexer_id(row_id, str(vi_id))
 
             store_raw_output(row_id, indexer_result["raw_index_data"])
 
@@ -533,7 +552,14 @@ async def process_queue():
             except Exception as e:
                 print(f"[queue] GPT sentiment failed (non-fatal): {str(e)}", flush=True)
 
-            update_processed(row_id=row_id, scores=scores, sentiment_analysis_score=gpt_sentiment)
+            transcript = (indexer_result.get("transcript") or "").strip()
+            summary = transcript[:16000] if transcript else None
+            update_processed(
+                row_id=row_id,
+                scores=scores,
+                sentiment_analysis_score=gpt_sentiment,
+                video_transcript_summary=summary,
+            )
             print(f"[queue] row id={row_id} updated in Supabase", flush=True)
             results.append({"id": row_id, "status": "ok", "scores": scores})
 
@@ -585,11 +611,12 @@ async def vi_callback(id: str, state: str):
         except Exception as e:
             print(f"[callback] GPT failed (non-fatal): {e}", flush=True)
 
-        store_callback_result(id, index_data, scores, gpt_sentiment)
-        print(f"[callback] done vi_video_id={id}", flush=True)
+        tsum = (transcript or "").strip()[:16000] if transcript else None
+        store_callback_result(id, index_data, scores, gpt_sentiment, video_transcript_summary=tsum)
+        print(f"[callback] done azure_video_indexer_id={id}", flush=True)
 
     except Exception as e:
-        print(f"[callback] ERROR vi_video_id={id}: {e}", flush=True)
+        print(f"[callback] ERROR azure_video_indexer_id={id}: {e}", flush=True)
         store_callback_error(id, str(e))
 
     return {"ok": True}

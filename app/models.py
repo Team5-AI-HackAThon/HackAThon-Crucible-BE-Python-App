@@ -63,6 +63,43 @@ class SentenceSentiment(BaseModel):
     confidence_scores: dict
 
 
+class MediaAssetPayload(BaseModel):
+    """Client-provided media row; file must already exist at storage_bucket / storage_path."""
+
+    id: str
+    owner_id: str
+    project_id: Optional[str] = None
+    kind: str
+    storage_bucket: str
+    storage_path: str
+    duration_seconds: Optional[int] = None
+    mime_type: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+    published_at: Optional[str] = None
+    quiz_template_slug: Optional[str] = None
+    metadata: dict = {}
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SubmitAsyncJsonRequest(BaseModel):
+    media_asset: MediaAssetPayload
+
+
+class JsonSubmitAsyncAccepted(BaseModel):
+    """Immediate response for POST /submit-async (JSON body)."""
+
+    sentiment_output_id: str
+    media_asset_id: str
+    media_url: str
+    sse_events_path: str
+    status_poll_path: str
+    job_status: Literal["queued"] = "queued"
+    message: str = (
+        "Processing started. Open an SSE connection to sse_events_path for live stage updates."
+    )
+
+
 class AsyncVideoSubmitResponse(BaseModel):
     """Immediate response after upload to Storage + DB; Video Indexer runs in background."""
 
@@ -91,3 +128,4 @@ class VideoSentimentResponse(BaseModel):
     persisted_to_supabase: bool = False
     supabase_row_id: Optional[str] = None
     persistence_error: Optional[str] = None
+    video_transcript_summary: Optional[str] = None
