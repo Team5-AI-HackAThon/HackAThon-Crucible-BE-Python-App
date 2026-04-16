@@ -6,7 +6,7 @@ import logging
 
 load_dotenv()
 
-from app.routes import sentiment
+from app.routes import root_submit, sentiment
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(root_submit.router)
 app.include_router(sentiment.router)
 
 
